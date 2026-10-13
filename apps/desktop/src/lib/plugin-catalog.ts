@@ -19,8 +19,13 @@
  * Plugin dialog, which still requires the user's explicit confirmation.
  */
 
+import type { ConnectionState } from '@hermes/shared'
+import type { ReadableAtom } from 'nanostores'
+
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
+import { $gatewayState } from '@/store/session'
 
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
 export const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
@@ -78,8 +83,51 @@ export type CatalogRequest = (
   params: { name: string }
 ) => Promise<CatalogLookupReply | null | undefined>
 
+/**
+ * Run `send` once the active gateway is open. A link that launches Desktop is
+ * delivered as soon as the renderer mounts, before the backend socket exists,
+ * so sending at once fails before anything reaches the backend. The wait shares
+ * the renderer's cold-boot budget; past it the caller gets a rejection, never a
+ * promise that stays pending.
+ */
+export function sendWhenGatewayOpen<T>(
+  send: () => Promise<T>,
+  {
+    state = $gatewayState,
+    timeoutMs = BACKEND_BOOT_WAIT_TIMEOUT_MS
+  }: {
+    state?: ReadableAtom<ConnectionState>
+    timeoutMs?: number
+  } = {}
+): Promise<T> {
+  if (state.get() === 'open') {
+    return send()
+  }
+
+  let stop = () => {}
+
+  const opened = new Promise<void>(resolve => {
+    stop = state.listen(next => {
+      if (next === 'open') {
+        stop()
+        resolve()
+      }
+    })
+  })
+
+  return withTimeout(opened, timeoutMs, 'Hermes backend did not connect', () => stop()).then(send)
+}
+
+// The route lookup inside requestGatewayForProfile has no deadline of its own, so the
+// whole call is bounded here, not just the RPC.
 const activeProfileRequest: CatalogRequest = (method, params) =>
-  requestGatewayForProfile<CatalogLookupReply>(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS)
+  sendWhenGatewayOpen(() =>
+    withTimeout(
+      requestGatewayForProfile<CatalogLookupReply>(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS),
+      LOOKUP_TIMEOUT_MS,
+      `request timed out: ${method}`
+    )
+  )
 
 async function lookupFromFeed(name: string, fetchImpl: typeof fetch): Promise<PluginCatalogLookup> {
   let rows: unknown

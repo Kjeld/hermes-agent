@@ -1,7 +1,13 @@
-import { JSON_RPC_METHOD_NOT_FOUND, JsonRpcGatewayError } from '@hermes/shared'
+import { type ConnectionState, JSON_RPC_METHOD_NOT_FOUND, JsonRpcGatewayError } from '@hermes/shared'
+import { atom } from 'nanostores'
 import { describe, expect, it, vi } from 'vitest'
 
-import { type CatalogLookupReply, type CatalogRequest, lookupPluginCatalogEntry } from './plugin-catalog'
+import {
+  type CatalogLookupReply,
+  type CatalogRequest,
+  lookupPluginCatalogEntry,
+  sendWhenGatewayOpen
+} from './plugin-catalog'
 
 const SHA = 'a'.repeat(40)
 
@@ -79,5 +85,30 @@ describe('lookupPluginCatalogEntry', () => {
       error: 'unavailable'
     })
     expect(noFetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('sendWhenGatewayOpen', () => {
+  it('holds a lookup that arrives before the backend connects, then sends it once the gateway opens', async () => {
+    const state = atom<ConnectionState>('connecting')
+    const send = vi.fn(async () => 'sent')
+    const pending = sendWhenGatewayOpen(send, { state, timeoutMs: 5_000 })
+
+    await Promise.resolve()
+    expect(send).not.toHaveBeenCalled()
+
+    state.set('open')
+
+    await expect(pending).resolves.toBe('sent')
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects when the backend never connects, so a startup link still ends in a visible error', async () => {
+    const send = vi.fn(async () => 'sent')
+
+    await expect(
+      sendWhenGatewayOpen(send, { state: atom<ConnectionState>('connecting'), timeoutMs: 10 })
+    ).rejects.toThrow('Hermes backend did not connect')
+    expect(send).not.toHaveBeenCalled()
   })
 })
