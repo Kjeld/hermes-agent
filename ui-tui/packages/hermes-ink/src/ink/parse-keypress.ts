@@ -800,7 +800,14 @@ function parseKeypress(s: string = ''): ParsedKey {
     return createNavKey(s, 'mouse', false)
   }
 
-  if (s === '\r' || s === '\n' || s === '\x1b\r' || s === '\x1b\n') {
+  // A lone Enter may arrive as CR, LF, or CRLF fused in a single read —
+  // the last is what Android/mobile terminals send for Enter (the CR is
+  // consumed as the newline's carriage-return half, not a separate keypress).
+  // CR and LF are deliberately NOT split points in parseTextKeypresses (an
+  // embedded CR/LF in a text token is paste/newline content, not Enter), so
+  // the fused CRLF reaches parseKeypress whole only when it IS the entire
+  // token — i.e. a lone Enter. Recognize it as `return`.
+  if (s === '\r' || s === '\n' || s === '\r\n' || s === '\x1b\r' || s === '\x1b\n') {
     key.raw = undefined
     key.name = 'return'
     key.meta = s.startsWith('\x1b')
