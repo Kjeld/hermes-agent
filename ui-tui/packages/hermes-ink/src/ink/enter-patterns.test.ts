@@ -52,3 +52,43 @@ describe('mobile Enter arrival patterns (analysis probe)', () => {
     expect(keys.map(k => k.name)).toEqual([''])
   })
 })
+
+/**
+ * Sticky-modifier class: Android/mobile terminals deliver a modified Enter as
+ * ESC followed by the CRLF newline halves. The tokenizer splits that into an
+ * ESC+CR / ESC+LF sequence (an Alt+Enter) plus a separate opposite line-ending
+ * text token, which would otherwise re-parse as a second bare Enter and submit
+ * the composer twice. The parser fuses the halves into one modified Enter.
+ */
+describe('sticky-modifier ESC + CRLF fused (modified Enter)', () => {
+  it('ESC CRLF fused in one read is one Alt+Enter', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b\r\n')
+    expect(keys.map(k => k.name)).toEqual(['return'])
+    expect(keys[0]).toMatchObject({ name: 'return', meta: true })
+  })
+
+  it('ESC LFCR fused in one read is one Alt+Enter', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b\n\r')
+    expect(keys.map(k => k.name)).toEqual(['return'])
+    expect(keys[0]).toMatchObject({ name: 'return', meta: true })
+  })
+
+  it('a lone ESC+CR followed by a real separate Enter stays two Enters', () => {
+    // No fusion across a real boundary: ESC+CR is one Alt+Enter, then a fresh
+    // bare Enter on the same read is a second keypress (not the CRLF half).
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b\r\r')
+    expect(keys.map(k => k.name)).toEqual(['return', 'return'])
+  })
+
+  it('ESC+CR followed by text is one Alt+Enter plus the text', () => {
+    // The next token is not the opposite line-ending, so nothing is swallowed.
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b\ra')
+    expect(keys.map(k => k.name)).toEqual(['return', 'a'])
+  })
+
+  it('a lone ESC+CR alone (no CRLF half) stays one Alt+Enter', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b\r')
+    expect(keys.map(k => k.name)).toEqual(['return'])
+    expect(keys[0]).toMatchObject({ name: 'return', meta: true })
+  })
+})

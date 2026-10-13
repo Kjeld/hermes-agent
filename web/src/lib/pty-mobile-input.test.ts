@@ -167,4 +167,30 @@ describe("createPtyEnterFuser", () => {
     expect(fuser.process("x")).toBe("x"); // closes the window
     expect(fuser.process("\n")).toBe("\n"); // fresh newline, kept
   });
+
+  it("fuses a modified Enter (ESC+CR) and its LF half split across callbacks", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\x1b\r")).toBe("\x1b\r"); // Alt+Enter sent immediately
+    expect(fuser.process("\n")).toBe(""); // swallowed — the LF half of the Alt+Enter
+  });
+
+  it("fuses a modified Enter (ESC+LF) and its CR half split across callbacks", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\x1b\n")).toBe("\x1b\n");
+    expect(fuser.process("\r")).toBe(""); // swallowed — the CR half
+  });
+
+  it("does not swallow a real second Enter after a modified Enter", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\x1b\r")).toBe("\x1b\r");
+    expect(fuser.process("x")).toBe("x"); // closes the modified-Enter window
+    expect(fuser.process("\n")).toBe("\n"); // fresh newline, kept
+  });
+
+  it("does not swallow a second line-ending when it is not the CRLF half", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\x1b\r")).toBe("\x1b\r");
+    // CR after ESC+CR is a fresh Enter, not the LF half — kept as two Enters
+    expect(fuser.process("\r")).toBe("\r");
+  });
 });

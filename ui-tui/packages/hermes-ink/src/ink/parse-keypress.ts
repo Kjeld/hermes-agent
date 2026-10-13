@@ -302,7 +302,9 @@ export function parseMultipleKeypresses(
   let inPaste = prevState.mode === 'IN_PASTE'
   let pasteBuffer = prevState.pasteBuffer
 
-  for (const token of tokens) {
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const token = tokens[ti]!
+
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
         inPaste = true
@@ -328,7 +330,31 @@ export function parseMultipleKeypresses(
           if (mouse) {
             keys.push(mouse)
           } else {
-            keys.push(parseKeypress(token.value))
+            const parsed = parseKeypress(token.value)
+
+            // Sticky-modifier (ESC) + CRLF fused in one read: Android/mobile
+            // terminals deliver a modified Enter as ESC followed by the CRLF
+            // newline halves, which the tokenizer splits into an ESC+CR / ESC+LF
+            // sequence token (`\x1b\r` / `\x1b\n`, an Alt+Enter) and a separate
+            // opposite line-ending text token (`\n` / `\r`). Without fusion that
+            // lone CR/LF half re-parses as a second bare Enter -> the composer
+            // submits twice. Fuse the halves into one modified Enter, exactly
+            // like the CRLF-fused Enter recognition above.
+            if (
+              parsed.name === 'return' &&
+              parsed.meta &&
+              ti + 1 < tokens.length &&
+              (token.value === '\x1b\r' || token.value === '\x1b\n')
+            ) {
+              const next = tokens[ti + 1]!
+              const opposite = token.value === '\x1b\r' ? '\n' : '\r'
+
+              if (next.type === 'text' && next.value === opposite) {
+                ti++ // swallow the CR/LF half — it is part of this Alt+Enter
+              }
+            }
+
+            keys.push(parsed)
           }
         }
       }

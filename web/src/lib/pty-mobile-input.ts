@@ -157,9 +157,15 @@ export const ENTER_SPLIT_WINDOW_MS = 60;
  * a new keypress. Two identical bytes (CR CR / LF LF) are real double-Enters
  * and are never fused; a fused CRLF/LFCR chunk is one Enter and passes whole
  * (the parser already treats it as one, see parse-keypress).
+ *
+ * Also fuses the sticky-modifier case: a modified Enter (ESC + CR/LF, i.e.
+ * Alt+Enter) can arrive as `\x1b\r` / `\x1b\n` in one callback with its
+ * opposite line-ending half in the next. Without this the PTY sees a lone
+ * Alt+Enter plus a separate Enter — the composer submits twice. The
+ * opposite half is swallowed the same way as a bare split CRLF.
  */
 export function createPtyEnterFuser(windowMs = ENTER_SPLIT_WINDOW_MS) {
-  let last: { byte: string; at: number } | null = null;
+  let last: { byte: string; at: number; expectHalf?: string } | null = null;
 
   return {
     /**
@@ -168,6 +174,15 @@ export function createPtyEnterFuser(windowMs = ENTER_SPLIT_WINDOW_MS) {
      * across callbacks (its CR/LF counterpart was already delivered).
      */
     process(data: string): string {
+      // Modified-Enter (ESC + CR/LF) window: swallow exactly the CRLF half
+      // we are waiting for; a non-matching CR/LF is a fresh Enter.
+      if (last?.expectHalf && (data === "\r" || data === "\n")) {
+        if (data === last.expectHalf && Date.now() - last.at <= windowMs) {
+          return "";
+        }
+        last = null;
+        return data;
+      }
       if (data === "\r" || data === "\n") {
         if (
           last &&
@@ -183,6 +198,16 @@ export function createPtyEnterFuser(windowMs = ENTER_SPLIT_WINDOW_MS) {
         last = { byte: data, at: Date.now() };
         return data;
       }
+      // A modified Enter (ESC + CR or ESC + LF) split across callbacks:
+      // keep the window open so its opposite CR/LF half is swallowed next.
+      if (data === "\x1b\r" || data === "\x1b\n") {
+        last = {
+          byte: data,
+          at: Date.now(),
+          expectHalf: data === "\x1b\r" ? "\n" : "\r",
+        };
+        return data;
+      }
       // Any other input ends the split-window: a later CR/LF is a real
       // Enter, not the echo of this chunk.
       last = null;
@@ -190,4 +215,3 @@ export function createPtyEnterFuser(windowMs = ENTER_SPLIT_WINDOW_MS) {
     },
   };
 }
-
