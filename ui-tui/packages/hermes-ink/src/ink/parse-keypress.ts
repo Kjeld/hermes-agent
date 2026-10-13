@@ -806,8 +806,10 @@ function parseKeypress(s: string = ''): ParsedKey {
   // CR and LF are deliberately NOT split points in parseTextKeypresses (an
   // embedded CR/LF in a text token is paste/newline content, not Enter), so
   // the fused CRLF reaches parseKeypress whole only when it IS the entire
-  // token — i.e. a lone Enter. Recognize it as `return`.
-  if (s === '\r' || s === '\n' || s === '\r\n' || s === '\x1b\r' || s === '\x1b\n') {
+  // token — i.e. a lone Enter. Recognize it as `return`. A few terminals
+  // (and some mobile keyboards) emit the halves reversed (LF then CR), so
+  // `\n\r` is recognized the same way.
+  if (s === '\r' || s === '\n' || s === '\r\n' || s === '\n\r' || s === '\x1b\r' || s === '\x1b\n') {
     key.raw = undefined
     key.name = 'return'
     key.meta = s.startsWith('\x1b')

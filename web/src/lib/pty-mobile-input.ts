@@ -98,6 +98,12 @@ export function updatePtyInputLine(currentLine: string, data: string): string {
     return "";
   }
   let next = currentLine;
+  // A fused CRLF/LFCR chunk is one Enter (see parse-keypress), not two
+  // line endings — reset the tracked line once rather than twice so the
+  // replacement tracker stays consistent with the enter fuser.
+  if (data === "\r\n" || data === "\n\r") {
+    return "";
+  }
   for (const ch of chars(data)) {
     if (ch === "\r" || ch === "\n") {
       next = "";
@@ -134,3 +140,54 @@ export function normalizePtyMobileInput(
     normalized: false,
   };
 }
+
+// How long (ms) a CR and its trailing LF may arrive apart and still count as
+// one split CRLF Enter rather than two Enters. A human pressing Enter twice
+// is far slower than xterm's two onData callbacks for one CRLF, and two
+// identical bytes (CR CR / LF LF) are never fused — only CR+LF / LF+CR.
+export const ENTER_SPLIT_WINDOW_MS = 60;
+
+/**
+ * Fuses a CRLF that Android/mobile terminals split across two xterm onData
+ * callbacks (CR in one callback, LF in the next) into one Enter.
+ *
+ * The first line-ending byte is sent immediately (no latency added); only
+ * the *second, opposite* line-ending byte arriving within the window is
+ * swallowed — it is the carriage-return/newline half of the same Enter, not
+ * a new keypress. Two identical bytes (CR CR / LF LF) are real double-Enters
+ * and are never fused; a fused CRLF/LFCR chunk is one Enter and passes whole
+ * (the parser already treats it as one, see parse-keypress).
+ */
+export function createPtyEnterFuser(windowMs = ENTER_SPLIT_WINDOW_MS) {
+  let last: { byte: string; at: number } | null = null;
+
+  return {
+    /**
+     * Process one chunk of PTY-bound input. Returns the chunk to actually
+     * send, or "" when the chunk is the second half of a CRLF that was split
+     * across callbacks (its CR/LF counterpart was already delivered).
+     */
+    process(data: string): string {
+      if (data === "\r" || data === "\n") {
+        if (
+          last &&
+          data !== last.byte &&
+          Date.now() - last.at <= windowMs
+        ) {
+          return "";
+        }
+        last = { byte: data, at: Date.now() };
+        return data;
+      }
+      if (data === "\r\n" || data === "\n\r") {
+        last = { byte: data, at: Date.now() };
+        return data;
+      }
+      // Any other input ends the split-window: a later CR/LF is a real
+      // Enter, not the echo of this chunk.
+      last = null;
+      return data;
+    },
+  };
+}
+

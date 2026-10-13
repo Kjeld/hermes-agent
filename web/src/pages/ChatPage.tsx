@@ -66,6 +66,7 @@ import {
   MOBILE_REPLACEMENT_WINDOW_MS,
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
+  createPtyEnterFuser,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
@@ -795,6 +796,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const compositionForwarder = createPtyCompositionForwarder((data) => {
       sendComposedText(data);
     });
+    // Android/mobile terminals split one Enter into a CR callback and an LF
+    // callback; fuse those halves into a single Enter before it reaches the
+    // PTY (see createPtyEnterFuser).
+    const ptyEnterFuser = createPtyEnterFuser();
     term.open(host);
 
     // IME composition guard (fixes #52111).
@@ -1486,6 +1491,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (SGR_MOUSE_RE.test(data)) {
           return;
         }
+
+        // Android/mobile terminals frequently deliver one Enter as a CR in
+        // one xterm onData callback and the LF in the next (a split CRLF).
+        // Without this, the backend sees two line endings -> a double Enter
+        // that submits the composer twice. The fuser sends the first byte
+        // immediately and swallows the opposite second byte that arrives
+        // within the split window — one Enter, no latency, and real
+        // double-Enters (CR CR / LF LF) are preserved.
+        const fused = ptyEnterFuser.process(data);
+        if (fused === "") {
+          return;
+        }
+        data = fused;
 
         if (
           ws.readyState !== WebSocket.OPEN ||

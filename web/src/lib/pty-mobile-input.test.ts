@@ -4,6 +4,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
   updatePtyInputLine,
+  createPtyEnterFuser,
 } from "./pty-mobile-input";
 
 describe("shouldTreatInputAsMobileReplacement", () => {
@@ -97,6 +98,14 @@ describe("updatePtyInputLine", () => {
     expect(updatePtyInputLine("abc", "\r")).toBe("");
   });
 
+  it("resets once on a fused CRLF/LFCR Enter chunk", () => {
+    // A fused \r\n or \n\r is one Enter (see parse-keypress); the tracker
+    // must reset the line exactly once so it stays consistent with the
+    // enter fuser rather than treating it as two line endings.
+    expect(updatePtyInputLine("hello", "\r\n")).toBe("");
+    expect(updatePtyInputLine("hello", "\n\r")).toBe("");
+  });
+
   it("resets tracking on escape sequences instead of appending their payload", () => {
     // Left-arrow arrives as one CSI chunk; the tracker cannot model cursor
     // moves, so it must disarm rather than record "hello[D".
@@ -116,5 +125,46 @@ describe("normalizePtyMobileInput after cursor movement", () => {
 
     expect(result.normalized).toBe(false);
     expect(result.data).toBe("Kain");
+  });
+});
+
+describe("createPtyEnterFuser", () => {
+  it("fuses CR then LF split across callbacks into one Enter", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\r")).toBe("\r"); // sent immediately, no latency
+    expect(fuser.process("\n")).toBe(""); // swallowed — the LF half of the CRLF
+  });
+
+  it("fuses LF then CR split across callbacks into one Enter", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\n")).toBe("\n");
+    expect(fuser.process("\r")).toBe(""); // swallowed — the CR half
+  });
+
+  it("does not fuse two identical line endings (a real double Enter)", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\r")).toBe("\r");
+    expect(fuser.process("\r")).toBe("\r"); // CR CR = two Enters, kept
+  });
+
+  it("does not fuse a CRLF that arrived fused in one chunk", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("\r\n")).toBe("\r\n"); // parser treats it as one Enter
+    expect(fuser.process("\n\r")).toBe("\n\r");
+  });
+
+  it("ends the split-window when non-line-ending input arrives", () => {
+    const fuser = createPtyEnterFuser(60);
+    expect(fuser.process("hello")).toBe("hello");
+    expect(fuser.process("\r")).toBe("\r"); // a fresh Enter, not an echo
+  });
+
+  it("does not fuse a second Enter arriving after the split-window closes", () => {
+    const fuser = createPtyEnterFuser(60);
+    // Interleave real text to close the split-window, then Enter again:
+    // the second CR is a fresh Enter, not the echo of the first.
+    expect(fuser.process("\r")).toBe("\r");
+    expect(fuser.process("x")).toBe("x"); // closes the window
+    expect(fuser.process("\n")).toBe("\n"); // fresh newline, kept
   });
 });
