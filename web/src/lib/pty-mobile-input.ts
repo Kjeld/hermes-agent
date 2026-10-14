@@ -363,16 +363,18 @@ export function createMobilePasswordInput(
 } | null {
   if (!isMobile || typeof document === "undefined") return null;
 
-  // Wrap the input in a dedicated <form autocomplete="off">. Chrome's
-  // password manager IGNORES `autocomplete="off"` on the input itself by
-  // design (so sites can't disable password saving), but it DOES respect it
-  // on an enclosing form — the only reliably-working suppression for recent
-  // Chrome. This stops BOTH the "save password?" prompt AND the "suggest a
-  // strong password" bar. `new-password` would fix the save prompt but
-  // TRIGGERS the strong-password suggestion, so we use plain `off` here and
-  // rely on the form-level `off`.
+  // Wrap the input in a dedicated <form autocomplete="off" data-form-type="other">.
+  // Chrome's password manager IGNORES `autocomplete="off"` on the input itself
+  // by design (so sites can't disable password saving), but it DOES respect it
+  // on an enclosing form. Setting `data-form-type="other"` on the FORM (not just
+  // the input) additionally classifies the whole form as non-password, which
+  // suppresses BOTH the "save password?" prompt AND the "suggest a strong
+  // password" bar. `new-password` on the input is the proven save-prompt
+  // suppressor (fcead6fe4e) — combined with the form-level `other` classification
+  // it no longer triggers the strong-password suggestion.
   const form = document.createElement("form");
   form.setAttribute("autocomplete", "off");
+  form.setAttribute("data-form-type", "other");
   form.style.position = "fixed";
   form.style.left = "-9999px";
   form.style.width = "1px";
@@ -383,7 +385,7 @@ export function createMobilePasswordInput(
   el.type = "password";
   el.id = PASSWORD_INPUT_ID;
   el.setAttribute("aria-label", "Terminal input (raw mode)");
-  el.setAttribute("autocomplete", "off");
+  el.setAttribute("autocomplete", "new-password");
   el.setAttribute("data-form-type", "other");
   el.setAttribute("autocapitalize", "off");
   // Visually hidden but focusable — the keyboard opens on this element.
