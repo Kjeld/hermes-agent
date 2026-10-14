@@ -67,6 +67,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
   createPtyEnterFuser,
+  createMobilePasswordInput,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
@@ -201,6 +202,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ptyInputLineRef = useRef("");
   const mobileReplacementInputUntilRef = useRef(0);
+  // Android raw-mode input workaround: the hidden password input's focus()
+  // (mobile only) is stored here so the tab-activation / window-focus
+  // restore effects below focus it instead of xterm's textarea. Null on
+  // desktop, where xterm's own textarea keeps focus.
+  const mobileRawFocusRef = useRef<(() => void) | null>(null);
   const [ptyState, setPtyState] = useState<PtyConnectionState>("connecting");
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
   // True until the first real PTY payload arrives for a resumed session.
@@ -632,7 +638,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         s.send("\r");
         await pasteDelay();
       }
-      term.focus();
+      // Mobile: keep the soft keyboard on the hidden password input (raw
+      // mode) after image-paste; desktop: xterm's textarea. mobileRawFocusRef
+      // is null on desktop.
+      if (mobileRawFocusRef.current) {
+        mobileRawFocusRef.current();
+      } else {
+        term.focus();
+      }
     };
     const uploadAndAttachImages = (files: File[]) => {
       if (!files.length) return;
@@ -790,6 +803,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     let mobileInputCleanup: (() => void) | null = null;
+    // Android raw-mode input workaround: a hidden `<input type="password">`
+    // that forces the Android keyboard to deliver per-tap characters (no
+    // IME composition, no word-buffering-to-space). Created on mobile after
+    // forwardPtyData exists; focused instead of xterm's textarea so the soft
+    // keyboard opens on the password input. See createMobilePasswordInput.
+    let mobilePasswordInput: ReturnType<typeof createMobilePasswordInput> =
+      null;
+    let mobilePasswordInputDispose: (() => void) | null = null;
+    // The password input's per-tap input/keydown callbacks must reach the PTY
+    // data path (forwardPtyData), which only exists inside the async WS IIFE
+    // below. Hoist a late-bound forwarding closure (same pattern as
+    // sendComposedText) so the input created at focus time reads the latest
+    // forwardPtyData even before the socket ticket resolves.
+    let mobileRawOnInput: (data: string) => void = () => undefined;
     // xterm occasionally drops committed dead-key/IME text instead of emitting
     // onData. The compositionend event supplies the authoritative text.
     let sendComposedText: (data: string) => void = () => undefined;
@@ -1532,6 +1559,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
+      // Android raw-mode input workaround: the hidden password input's
+      // per-tap input/keydown events are forwarded here, into the same PTY
+      // data path as xterm's own onData (enter-fuser + mobile replacement
+      // normalization both apply). Assigned late like sendComposedText.
+      mobileRawOnInput = (data) => forwardPtyData(data);
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
@@ -1558,7 +1590,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     })();
 
-    term.focus();
+    // Android raw-mode input workaround (#137986): on a touch/mobile client,
+    // focus a hidden `<input type="password">` instead of xterm's textarea.
+    // The password input forces Android keyboards (Gboard, SwiftKey) out of
+    // IME composition, so every tap lands as a per-character `insertText`
+    // input event that reaches the PTY raw — fixing "no text types at all".
+    // Desktop keeps xterm's own textarea path (createMobilePasswordInput
+    // returns null there), so this block is inert on desktop.
+    const isMobileLike =
+      typeof navigator !== "undefined" &&
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    mobilePasswordInput = createMobilePasswordInput(isMobileLike, (data) => {
+      mobileRawOnInput(data);
+    });
+    if (mobilePasswordInput) {
+      mobilePasswordInputDispose = mobilePasswordInput.dispose;
+      mobileRawFocusRef.current = () => mobilePasswordInput.focus();
+      mobilePasswordInput.focus();
+    } else {
+      mobileRawFocusRef.current = null;
+      term.focus();
+    }
 
     return () => {
       unmounting = true;
@@ -1571,6 +1623,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
+      mobilePasswordInputDispose?.();
+      mobileRawFocusRef.current = null;
       compositionForwarder.dispose();
       cleanupTouchScroll();
       handleBrowserDropCleanup();
@@ -1684,7 +1738,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ? document.activeElement
           : null;
         if (shouldRestoreTerminalFocus(active, hostRef.current)) {
-          termRef.current?.focus();
+          // Mobile: focus the hidden password input (raw mode); desktop:
+          // focus xterm's textarea. mobileRawFocusRef is null on desktop.
+          if (mobileRawFocusRef.current) {
+            mobileRawFocusRef.current();
+          } else {
+            termRef.current?.focus();
+          }
         }
       });
     });
@@ -1703,7 +1763,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!isActive || typeof window === "undefined") return;
     const onWindowFocus = () => {
       if (shouldRestoreTerminalFocus(document.activeElement, hostRef.current)) {
-        termRef.current?.focus();
+        // Mobile: focus the hidden password input (raw mode); desktop:
+        // focus xterm's textarea. mobileRawFocusRef is null on desktop.
+        if (mobileRawFocusRef.current) {
+          mobileRawFocusRef.current();
+        } else {
+          termRef.current?.focus();
+        }
       }
     };
     window.addEventListener("focus", onWindowFocus);

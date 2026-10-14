@@ -5,6 +5,8 @@ import {
   shouldTreatInputAsMobileReplacement,
   updatePtyInputLine,
   createPtyEnterFuser,
+  mapKeydownToPty,
+  mapInputEventToPty,
 } from "./pty-mobile-input";
 
 describe("shouldTreatInputAsMobileReplacement", () => {
@@ -192,5 +194,106 @@ describe("createPtyEnterFuser", () => {
     expect(fuser.process("\x1b\r")).toBe("\x1b\r");
     // CR after ESC+CR is a fresh Enter, not the LF half — kept as two Enters
     expect(fuser.process("\r")).toBe("\r");
+  });
+});
+
+describe("mapKeydownToPty", () => {
+  it("maps Enter to CR", () => {
+    expect(mapKeydownToPty({ key: "Enter" })).toBe("\r");
+    expect(mapKeydownToPty({ key: "Return" })).toBe("\r");
+  });
+
+  it("maps Backspace and Delete to their terminal bytes", () => {
+    expect(mapKeydownToPty({ key: "Backspace" })).toBe("\x7f");
+    expect(mapKeydownToPty({ key: "Delete" })).toBe("\x1b[3~");
+  });
+
+  it("maps Tab (with Shift) to Tab / reverse-tab", () => {
+    expect(mapKeydownToPty({ key: "Tab" })).toBe("\t");
+    expect(mapKeydownToPty({ key: "Tab", shiftKey: true })).toBe("\x1b[Z");
+  });
+
+  it("maps Ctrl+letter to a control character", () => {
+    expect(mapKeydownToPty({ key: "a", ctrlKey: true })).toBe("\x01");
+    expect(mapKeydownToPty({ key: "c", ctrlKey: true })).toBe("\x03");
+    expect(mapKeydownToPty({ key: "z", metaKey: true })).toBe("\x1a");
+  });
+
+  it("maps arrow keys to ANSI cursor sequences", () => {
+    expect(mapKeydownToPty({ key: "ArrowUp" })).toBe("\x1b[A");
+    expect(mapKeydownToPty({ key: "ArrowDown" })).toBe("\x1b[B");
+    expect(mapKeydownToPty({ key: "ArrowRight" })).toBe("\x1b[C");
+    expect(mapKeydownToPty({ key: "ArrowLeft" })).toBe("\x1b[D");
+    expect(mapKeydownToPty({ key: "ArrowUp", altKey: true })).toBe("\x1b[1;3A");
+  });
+
+  it("maps Home/End/PageUp/PageDown/Escape", () => {
+    expect(mapKeydownToPty({ key: "Home" })).toBe("\x1b[H");
+    expect(mapKeydownToPty({ key: "End" })).toBe("\x1b[F");
+    expect(mapKeydownToPty({ key: "PageUp" })).toBe("\x1b[5~");
+    expect(mapKeydownToPty({ key: "PageDown" })).toBe("\x1b[6~");
+    expect(mapKeydownToPty({ key: "Escape" })).toBe("\x1b");
+  });
+
+  it("swallows the IME process key so React delegation doesn't misfire", () => {
+    expect(mapKeydownToPty({ key: "Process", keyCode: 229 })).toBe("");
+    expect(mapKeydownToPty({ key: "Dead", keyCode: 229 })).toBe("");
+  });
+
+  it("returns empty for printable characters (delivered via input event)", () => {
+    expect(mapKeydownToPty({ key: "a" })).toBe("");
+    expect(mapKeydownToPty({ key: "K" })).toBe("");
+    expect(mapKeydownToPty({ key: "1" })).toBe("");
+  });
+
+  it("maps function keys F1-F12 to their CSI sequences", () => {
+    expect(mapKeydownToPty({ key: "F1" })).toBe("\x1b[1~");
+    expect(mapKeydownToPty({ key: "F10" })).toBe("\x1b[21~");
+    expect(mapKeydownToPty({ key: "F11" })).toBe("\x1b[23~");
+    expect(mapKeydownToPty({ key: "F12" })).toBe("\x1b[24~");
+  });
+
+  it("maps Ctrl+Enter to LF and Ctrl+Space to NUL", () => {
+    expect(mapKeydownToPty({ key: "Enter", ctrlKey: true })).toBe("\x0a");
+    expect(mapKeydownToPty({ key: "Space", ctrlKey: true })).toBe("\x00");
+  });
+});
+
+describe("mapInputEventToPty", () => {
+  it("sends per-tap insertText data (the Android raw-mode path)", () => {
+    expect(mapInputEventToPty("insertText", "a", "a")).toBe("a");
+    expect(mapInputEventToPty("insertText", "K", "K")).toBe("K");
+  });
+
+  it("sends insertReplacementText data", () => {
+    expect(mapInputEventToPty("insertReplacementText", "Kain", "Kain")).toBe(
+      "Kain",
+    );
+  });
+
+  it("sends the whole accumulated value for paste/drop", () => {
+    expect(mapInputEventToPty("insertFromPaste", null, "hello world")).toBe(
+      "hello world",
+    );
+    expect(mapInputEventToPty("insertFromDrop", null, "pasted")).toBe(
+      "pasted",
+    );
+  });
+
+  it("maps backward/forward deletes to DEL", () => {
+    expect(mapInputEventToPty("deleteContentBackward", null, "")).toBe("\x7f");
+    expect(mapInputEventToPty("deleteContentForward", null, "")).toBe("\x7f");
+  });
+
+  it("defensively forwards composition data if it ever arrives", () => {
+    expect(mapInputEventToPty("insertCompositionText", "word", "word")).toBe(
+      "word",
+    );
+    expect(mapInputEventToPty("insertFromComposition", "x", "x")).toBe("x");
+  });
+
+  it("returns empty for unknown/no-data input events", () => {
+    expect(mapInputEventToPty(undefined, null, "")).toBe("");
+    expect(mapInputEventToPty("insertText", null, "")).toBe("");
   });
 });
