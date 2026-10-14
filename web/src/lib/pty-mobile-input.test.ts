@@ -5,7 +5,6 @@ import {
   shouldTreatInputAsMobileReplacement,
   updatePtyInputLine,
   createPtyEnterFuser,
-  beforeInputToCompositionCommit,
 } from "./pty-mobile-input";
 
 describe("shouldTreatInputAsMobileReplacement", () => {
@@ -193,33 +192,5 @@ describe("createPtyEnterFuser", () => {
     expect(fuser.process("\x1b\r")).toBe("\x1b\r");
     // CR after ESC+CR is a fresh Enter, not the LF half — kept as two Enters
     expect(fuser.process("\r")).toBe("\r");
-  });
-});
-
-describe("beforeInputToCompositionCommit", () => {
-  it("forwards a plain Gboard insertText tap on mobile", () => {
-    expect(beforeInputToCompositionCommit("insertText", "a", true)).toBe("a");
-  });
-
-  it("forwards insertCompositionText on mobile", () => {
-    expect(beforeInputToCompositionCommit("insertCompositionText", "é", true)).toBe("é");
-  });
-
-  it("turns insertLineBreak into an Enter (\\r) on mobile", () => {
-    expect(beforeInputToCompositionCommit("insertLineBreak", null, true)).toBe("\r");
-  });
-
-  it("ignores non-text beforeinput types on mobile", () => {
-    expect(beforeInputToCompositionCommit("deleteContentBackward", null, true)).toBe(null);
-    expect(beforeInputToCompositionCommit("insertReplacementText", "Kain", true)).toBe(null);
-  });
-
-  it("ignores empty text payloads", () => {
-    expect(beforeInputToCompositionCommit("insertText", "", true)).toBe(null);
-  });
-
-  it("ignores everything on desktop (not mobile-like)", () => {
-    expect(beforeInputToCompositionCommit("insertText", "a", false)).toBe(null);
-    expect(beforeInputToCompositionCommit("insertLineBreak", null, false)).toBe(null);
   });
 });
