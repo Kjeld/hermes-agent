@@ -367,7 +367,13 @@ export function createMobilePasswordInput(
   el.type = "password";
   el.id = PASSWORD_INPUT_ID;
   el.setAttribute("aria-label", "Terminal input (raw mode)");
-  el.setAttribute("autocomplete", "off");
+  // `new-password` (not `off`) is the only autocomplete value Chrome's
+  // password manager actually respects for suppressing the "save password"
+  // prompt on a password input — `off` is ignored there by design. It tells
+  // Chrome this is not a credential to remember. `data-form-type="other"`
+  // additionally signals the field is not part of a login form.
+  el.setAttribute("autocomplete", "new-password");
+  el.setAttribute("data-form-type", "other");
   el.setAttribute("autocapitalize", "off");
   // Visually hidden but focusable — the keyboard opens on this element.
   el.style.position = "fixed";
