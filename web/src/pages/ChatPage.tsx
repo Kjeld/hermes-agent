@@ -67,6 +67,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
   createPtyEnterFuser,
+  beforeInputToCompositionCommit,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
@@ -852,11 +853,33 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         compositionForwarder.onCompositionEnd(ev.data);
       };
+      // Android Chrome + Gboard deliver plain taps as beforeinput/input only
+      // — no keydown (not even keyCode 229) and no composition events — so
+      // xterm.js never emits onData and the compositionend fallback never
+      // fires: on those devices NO text reaches the PTY at all. Treat
+      // insertText / insertCompositionText / insertLineBreak beforeinput
+      // payloads as commits; the forwarder's 80 ms dedupe window makes this
+      // safe alongside xterm's own keydown/composition channels (#137986).
+      const markBeforeInput = (ev: Event) => {
+        const input = ev as InputEvent;
+        const commit = beforeInputToCompositionCommit(
+          input.inputType,
+          input.data,
+          isMobileLike,
+        );
+        if (commit) {
+          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+          compositionForwarder.onCompositionEnd(commit);
+          input.preventDefault?.();
+        }
+      };
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
+      textarea.addEventListener("beforeinput", markBeforeInput, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
+        textarea.removeEventListener("beforeinput", markBeforeInput, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
       };
     }
