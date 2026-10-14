@@ -363,16 +363,27 @@ export function createMobilePasswordInput(
 } | null {
   if (!isMobile || typeof document === "undefined") return null;
 
+  // Wrap the input in a dedicated <form autocomplete="off">. Chrome's
+  // password manager IGNORES `autocomplete="off"` on the input itself by
+  // design (so sites can't disable password saving), but it DOES respect it
+  // on an enclosing form — the only reliably-working suppression for recent
+  // Chrome. This stops BOTH the "save password?" prompt AND the "suggest a
+  // strong password" bar. `new-password` would fix the save prompt but
+  // TRIGGERS the strong-password suggestion, so we use plain `off` here and
+  // rely on the form-level `off`.
+  const form = document.createElement("form");
+  form.setAttribute("autocomplete", "off");
+  form.style.position = "fixed";
+  form.style.left = "-9999px";
+  form.style.width = "1px";
+  form.style.height = "1px";
+  form.style.opacity = "0";
+
   const el = document.createElement("input");
   el.type = "password";
   el.id = PASSWORD_INPUT_ID;
   el.setAttribute("aria-label", "Terminal input (raw mode)");
-  // `new-password` (not `off`) is the only autocomplete value Chrome's
-  // password manager actually respects for suppressing the "save password"
-  // prompt on a password input — `off` is ignored there by design. It tells
-  // Chrome this is not a credential to remember. `data-form-type="other"`
-  // additionally signals the field is not part of a login form.
-  el.setAttribute("autocomplete", "new-password");
+  el.setAttribute("autocomplete", "off");
   el.setAttribute("data-form-type", "other");
   el.setAttribute("autocapitalize", "off");
   // Visually hidden but focusable — the keyboard opens on this element.
@@ -384,7 +395,8 @@ export function createMobilePasswordInput(
   el.style.border = "0";
   el.style.padding = "0";
   el.tabIndex = 0;
-  document.body.appendChild(el);
+  form.appendChild(el);
+  document.body.appendChild(form);
 
   const handleInput = (ev: Event) => {
     const input = ev as InputEvent;
@@ -422,7 +434,9 @@ export function createMobilePasswordInput(
     dispose() {
       el.removeEventListener("input", handleInput);
       el.removeEventListener("keydown", handleKeydown);
-      el.remove();
+      // Remove the wrapping <form> — it owns the input, so removing it
+      // detaches both from the DOM.
+      form.remove();
     },
   };
 }
