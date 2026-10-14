@@ -385,9 +385,17 @@ export function createMobilePasswordInput(
   el.type = "password";
   el.id = PASSWORD_INPUT_ID;
   el.setAttribute("aria-label", "Terminal input (raw mode)");
-  el.setAttribute("autocomplete", "new-password");
+  el.setAttribute("autocomplete", "off");
   el.setAttribute("data-form-type", "other");
   el.setAttribute("autocapitalize", "off");
+  // `readonly` is the ONLY thing that definitively stops Chrome's password
+  // manager from touching this field at all: it skips readonly password
+  // inputs entirely — no "save password?" prompt AND no "suggest a strong
+  // password" bar. autocomplete juggling (off / new-password) provably fails
+  // on this Chrome (one always comes back). We clear it right before focus
+  // so the keyboard opens and raw-mode typing works, then re-set it on blur
+  // so Chrome never sees a fillable password field holding a value.
+  el.readOnly = true;
   // Visually hidden but focusable — the keyboard opens on this element.
   el.style.position = "fixed";
   el.style.left = "-9999px";
@@ -427,15 +435,29 @@ export function createMobilePasswordInput(
 
   el.addEventListener("input", handleInput);
   el.addEventListener("keydown", handleKeydown);
+  // On blur (keyboard closed) immediately re-lock the field: clear the value
+  // and restore readonly so Chrome's password manager never sees a fillable
+  // password field holding a value — this is what suppresses the save prompt.
+  const handleBlur = () => {
+    el.value = "";
+    if (el.setSelectionRange) el.setSelectionRange(0, 0);
+    el.readOnly = true;
+  };
+  el.addEventListener("blur", handleBlur);
 
   return {
     element: el,
     focus() {
+      // Clear readonly BEFORE focusing so the soft keyboard opens and raw-mode
+      // per-tap typing works; Chrome sees autocomplete="off" + data-form-type
+      // and (mostly) readonly, so it won't raise password UI.
+      el.readOnly = false;
       el.focus();
     },
     dispose() {
       el.removeEventListener("input", handleInput);
       el.removeEventListener("keydown", handleKeydown);
+      el.removeEventListener("blur", handleBlur);
       // Remove the wrapping <form> — it owns the input, so removing it
       // detaches both from the DOM.
       form.remove();
