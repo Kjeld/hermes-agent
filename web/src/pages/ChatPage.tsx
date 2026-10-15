@@ -67,7 +67,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
   createPtyEnterFuser,
-  createMobilePasswordInput,
+  createMobileTextareaInput,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
@@ -129,6 +129,7 @@ import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termWrapRef = useRef<HTMLDivElement | null>(null);
+  const mobileTextareaMountRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -803,16 +804,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     let mobileInputCleanup: (() => void) | null = null;
-    // Android raw-mode input workaround: a hidden `<input type="password">`
-    // that forces the Android keyboard to deliver per-tap characters (no
-    // IME composition, no word-buffering-to-space). Created on mobile after
-    // forwardPtyData exists; focused instead of xterm's textarea so the soft
-    // keyboard opens on the password input. See createMobilePasswordInput.
-    let mobilePasswordInput: ReturnType<typeof createMobilePasswordInput> =
+    // Android mobile input (user preference): a VISIBLE textarea instead of
+    // the hidden raw-mode password input. A plain textarea carries no
+    // password/autocomplete UI (no "save password?", no "strong password"
+    // bar), and lets Gboard/SwiftKey do normal word-prediction + swipe typing.
+    // Created on mobile after forwardPtyData exists; focused instead of
+    // xterm's textarea so the soft keyboard opens on it. Enter sends the
+    // accumulated line to the PTY. See createMobileTextareaInput.
+    let mobileTextareaInput: ReturnType<typeof createMobileTextareaInput> =
       null;
-    let mobilePasswordInputDispose: (() => void) | null = null;
-    // The password input's per-tap input/keydown callbacks must reach the PTY
-    // data path (forwardPtyData), which only exists inside the async WS IIFE
+    let mobileTextareaInputDispose: (() => void) | null = null;
+    // The textarea's Enter callback must reach the PTY data path
+    // (forwardPtyData), which only exists inside the async WS IIFE
     // below. Hoist a late-bound forwarding closure (same pattern as
     // sendComposedText) so the input created at focus time reads the latest
     // forwardPtyData even before the socket ticket resolves.
@@ -1590,23 +1593,41 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     })();
 
-    // Android raw-mode input workaround (#137986): on a touch/mobile client,
-    // focus a hidden `<input type="password">` instead of xterm's textarea.
-    // The password input forces Android keyboards (Gboard, SwiftKey) out of
-    // IME composition, so every tap lands as a per-character `insertText`
-    // input event that reaches the PTY raw — fixing "no text types at all".
-    // Desktop keeps xterm's own textarea path (createMobilePasswordInput
-    // returns null there), so this block is inert on desktop.
+    // Android mobile input (user preference, replaces the raw-mode password
+    // workaround): on a touch/mobile client show a VISIBLE textarea instead of
+    // xterm's textarea. A plain textarea carries no password/autocomplete UI
+    // and lets normal word-prediction/swipe typing work. Enter sends the
+    // accumulated line to the PTY. Desktop keeps xterm's own textarea path
+    // (createMobileTextareaInput returns null there), so this block is inert
+    // on desktop.
     const isMobileLike =
       typeof navigator !== "undefined" &&
       /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-    mobilePasswordInput = createMobilePasswordInput(isMobileLike, (data) => {
-      mobileRawOnInput(data);
+    mobileTextareaInput = createMobileTextareaInput(isMobileLike, (line) => {
+      // Enter: send the full line + a CR to the PTY.
+      mobileRawOnInput(line ? line + "\r" : "\r");
     });
-    if (mobilePasswordInput) {
-      mobilePasswordInputDispose = mobilePasswordInput.dispose;
-      mobileRawFocusRef.current = () => mobilePasswordInput.focus();
-      mobilePasswordInput.focus();
+    if (mobileTextareaInput) {
+      mobileTextareaInputDispose = mobileTextareaInput.dispose;
+      // Attach the visible textarea into the terminal wrapper (below the
+      // host) and style it as a theme-aware input bar.
+      const mount = mobileTextareaMountRef.current;
+      const el = mobileTextareaInput.element;
+      if (mount && el) {
+        el.style.width = "100%";
+        el.style.boxSizing = "border-box";
+        el.style.padding = "0.5rem 0.75rem";
+        el.style.border = "1px solid " + (terminalFg ?? "#94a3b8");
+        el.style.borderRadius = "0.5rem";
+        el.style.background = terminalBg ?? "#0e1715";
+        el.style.color = terminalFg ?? "#e2e8f0";
+        el.style.font = "inherit";
+        el.style.lineHeight = "1.4";
+        el.style.outline = "none";
+        mount.appendChild(el);
+      }
+      mobileRawFocusRef.current = () => mobileTextareaInput.focus();
+      mobileTextareaInput.focus();
     } else {
       mobileRawFocusRef.current = null;
       term.focus();
@@ -1623,7 +1644,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
-      mobilePasswordInputDispose?.();
+      mobileTextareaInputDispose?.();
+      mobileTextareaMountRef.current = null;
       mobileRawFocusRef.current = null;
       compositionForwarder.dispose();
       cleanupTouchScroll();
@@ -1986,6 +2008,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             role="region"
             aria-label="Chat terminal"
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+          />
+          {/* Mobile textarea input bar (user preference): the visible textarea
+              is appended here on Android/Chrome so normal typing works without
+              any password/autocomplete UI. Empty/shrink-0 on desktop. */}
+          <div
+            ref={mobileTextareaMountRef}
+            className="shrink-0"
           />
 
           {showReconnectOverlay && (

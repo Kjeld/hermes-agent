@@ -342,6 +342,7 @@ export function mapInputEventToPty(
 }
 
 const PASSWORD_INPUT_ID = "hermes-mobile-raw-input";
+const MOBILE_TEXTAREA_ID = "hermes-mobile-textarea-input";
 
 /**
  * Create a hidden `<input type="password">` that captures Android raw-mode
@@ -461,6 +462,92 @@ export function createMobilePasswordInput(
       // Remove the wrapping <form> — it owns the input, so removing it
       // detaches both from the DOM.
       form.remove();
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Visible mobile textarea input (user-preference fallback)
+//
+// The user chose a VISIBLE textarea for Chrome on Android over the hidden
+// raw-mode password input: it carries NO password/autocomplete UI at all
+// (a plain textarea), and lets Gboard/SwiftKey do normal word-prediction +
+// swipe typing instead of per-tap raw mode. We do NOT forward per-tap
+// `input` events (Android holds words in composition — the original bug),
+// so the textarea simply accumulates the visible line; Enter sends the
+// complete line to the PTY in one chunk. This trades full interactive
+// per-keystroke fidelity (vim/htop) for a clean chat/command-line input,
+// which is what the user wants ("dat zou vooruitgang zijn").
+// ─────────────────────────────────────────────────────────────────────────
+
+// What the textarea sends to the PTY when the user presses Enter: the
+// accumulated line plus a CR. Empty line -> a bare CR (blank submit).
+export function mobileTextareaEnterData(line: string): string {
+  return line ? line + "\r" : "\r";
+}
+
+export interface MobileTextareaInput {
+  element: HTMLTextAreaElement;
+  focus(): void;
+  dispose(): void;
+}
+
+export function createMobileTextareaInput(
+  isMobile: boolean,
+  onEnter: (line: string) => void,
+): MobileTextareaInput | null {
+  if (!isMobile || typeof document === "undefined") return null;
+
+  const el = document.createElement("textarea");
+  el.id = MOBILE_TEXTAREA_ID;
+  el.setAttribute("aria-label", "Terminal input (mobile)");
+  // Plain textarea => no password manager involvement. Suppress the browser's
+  // own suggestions/autofill on the field as far as possible.
+  el.setAttribute("autocomplete", "off");
+  el.setAttribute("autocorrect", "off");
+  el.setAttribute("autocapitalize", "off");
+  el.setAttribute("spellcheck", "false");
+  el.setAttribute("inputmode", "text");
+  el.rows = 1;
+  el.value = "";
+  // Visible styling is applied by ChatPage (theme-aware colors); base here.
+  el.style.resize = "none";
+  el.style.overflow = "hidden";
+
+  const handleKeydown = (ev: KeyboardEvent) => {
+    // Enter sends the accumulated line. Shift/Ctrl/Alt+Enter keep the browser
+    // default (newline) so the user can still type multi-line prompts.
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.ctrlKey && !ev.altKey) {
+      ev.preventDefault();
+      const line = el.value;
+      el.value = "";
+      onEnter(line);
+      return;
+    }
+    if (ev.key === "Tab") {
+      ev.preventDefault();
+      // Insert a literal tab into the buffer (sent as part of the line on
+      // Enter), so Tab doesn't move focus out of the textarea.
+      el.value = el.value + "\t";
+      return;
+    }
+    // Swallow the IME "process" key (keyCode 229) so React's root-level
+    // delegation doesn't synthesise a bogus onCompositionStart (#52111).
+    if (ev.keyCode === 229 || ev.key === "Process") {
+      ev.preventDefault();
+    }
+  };
+
+  el.addEventListener("keydown", handleKeydown);
+
+  return {
+    element: el,
+    focus() {
+      el.focus();
+    },
+    dispose() {
+      el.removeEventListener("keydown", handleKeydown);
+      el.remove();
     },
   };
 }
