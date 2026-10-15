@@ -68,6 +68,7 @@ import {
   shouldTreatInputAsMobileReplacement,
   createPtyEnterFuser,
   createMobileTextareaInput,
+  mobileTextareaEnterData,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
@@ -1605,7 +1606,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
     mobileTextareaInput = createMobileTextareaInput(isMobileLike, (line) => {
       // Enter: send the full line + a CR to the PTY.
-      mobileRawOnInput(line ? line + "\r" : "\r");
+      mobileRawOnInput(mobileTextareaEnterData(line));
     });
     if (mobileTextareaInput) {
       mobileTextareaInputDispose = mobileTextareaInput.dispose;

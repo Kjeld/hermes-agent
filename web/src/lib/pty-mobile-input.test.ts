@@ -7,6 +7,7 @@ import {
   createPtyEnterFuser,
   mapKeydownToPty,
   mapInputEventToPty,
+  mobileTextareaEnterData,
 } from "./pty-mobile-input";
 
 describe("shouldTreatInputAsMobileReplacement", () => {
@@ -295,5 +296,19 @@ describe("mapInputEventToPty", () => {
   it("returns empty for unknown/no-data input events", () => {
     expect(mapInputEventToPty(undefined, null, "")).toBe("");
     expect(mapInputEventToPty("insertText", null, "")).toBe("");
+  });
+});
+
+describe("mobileTextareaEnterData", () => {
+  it("sends the accumulated line plus a CR on Enter", () => {
+    expect(mobileTextareaEnterData("ls -la")).toBe("ls -la\r");
+  });
+
+  it("sends a bare CR for an empty line", () => {
+    expect(mobileTextareaEnterData("")).toBe("\r");
+  });
+
+  it("preserves spaces and unicode verbatim", () => {
+    expect(mobileTextareaEnterData("  héllo wörld  ")).toBe("  héllo wörld  \r");
   });
 });
