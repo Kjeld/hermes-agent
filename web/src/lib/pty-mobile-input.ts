@@ -5,6 +5,69 @@ const DELETE = "\x7f";
 // Exported so the ChatPage integration and tests share one tunable value.
 export const MOBILE_REPLACEMENT_WINDOW_MS = 350;
 
+// Slash-command autocomplete list for the mobile textarea, mirroring
+// hermes_cli/commands.py (COMMAND_REGISTRY) — the same source `/help`,
+// Telegram and Slack menus derive from. Open-WebUI-style: typing "/" pops a
+// matching command dropdown; Tab/Enter inserts the command into the buffer.
+export const MOBILE_SLASH_COMMANDS: ReadonlyArray<{ cmd: string; hint: string }> = [
+  { cmd: "/help", hint: "Show all commands" },
+  { cmd: "/new", hint: "Fresh session (alias /reset)" },
+  { cmd: "/clear", hint: "Clear screen + new session" },
+  { cmd: "/retry", hint: "Resend last message" },
+  { cmd: "/undo", hint: "Back up N user turns, re-prompt" },
+  { cmd: "/title", hint: "Name this session" },
+  { cmd: "/compress", hint: "Compress context (alias /compact)" },
+  { cmd: "/stop", hint: "Kill background processes" },
+  { cmd: "/status", hint: "Session, model, token info" },
+  { cmd: "/model", hint: "Switch model" },
+  { cmd: "/config", hint: "Show config" },
+  { cmd: "/personality", hint: "Set a personality" },
+  { cmd: "/reasoning", hint: "Reasoning effort/display" },
+  { cmd: "/tools", hint: "Manage tools" },
+  { cmd: "/skills", hint: "Search/install/manage skills" },
+  { cmd: "/learn", hint: "Learn a reusable skill" },
+  { cmd: "/memory", hint: "Review pending memory writes" },
+  { cmd: "/cron", hint: "Manage scheduled tasks" },
+  { cmd: "/bg", hint: "Run prompt in background session" },
+  { cmd: "/queue", hint: "Queue prompt for next turn" },
+  { cmd: "/steer", hint: "Inject message after next tool call" },
+  { cmd: "/branch", hint: "Branch the session" },
+  { cmd: "/resume", hint: "Resume a named session" },
+  { cmd: "/sessions", hint: "Browse previous sessions" },
+  { cmd: "/copy", hint: "Copy last response to clipboard" },
+  { cmd: "/paste", hint: "Attach clipboard image" },
+  { cmd: "/image", hint: "Attach a local image file" },
+  { cmd: "/update", hint: "Update Hermes to latest" },
+  { cmd: "/version", hint: "Show version" },
+  { cmd: "/quit", hint: "Exit CLI (alias /exit)" },
+];
+
+// Pure helpers for the slash-command autocomplete — extracted so the
+// behaviour is unit-testable without a DOM (the dropdown rendering lives in
+// createMobileTextareaInput; these compute matches and edits).
+export function mobileToken(value: string): string {
+  const m = value.match(/(^|\s)(\/[\w-]*)\s*$/);
+  return m ? m[2] : "";
+}
+
+export function mobileSlashMatches(token: string): ReadonlyArray<{ cmd: string; hint: string }> {
+  if (!token.startsWith("/")) return [];
+  const q = token.toLowerCase();
+  let out = MOBILE_SLASH_COMMANDS.filter((c) =>
+    c.cmd.toLowerCase().startsWith(q),
+  );
+  if (!out.length) {
+    out = MOBILE_SLASH_COMMANDS.filter((c) =>
+      c.cmd.toLowerCase().includes(q.slice(1)),
+    );
+  }
+  return out;
+}
+
+export function mobileCommitToken(value: string, cmd: string): string {
+  return value.replace(/(^|\s)\/[\w-]*\s*$/, (_whole: string, pre: string) => `${pre}${cmd} `);
+}
+
 function chars(text: string): string[] {
   return Array.from(text);
 }
@@ -482,8 +545,17 @@ export function createMobilePasswordInput(
 
 // What the textarea sends to the PTY when the user presses Enter: the
 // accumulated line plus a CR. Empty line -> a bare CR (blank submit).
+//
+// Android IMEs often leave a trailing newline in the textarea value after an
+// Enter commit (the browser's default newline insertion that `preventDefault`
+// on keydown cannot always stop). Sending that residual `\n` alongside our CR
+// would make the backend see TWO line endings (`\n` + `\r` = two Enters) and
+// double-submit the composer. Strip any trailing CR/LF so exactly ONE
+// line-ending byte (the CR we append) reaches the PTY — this is what the
+// desktop path sends for Enter (`\r`), so mobile matches it.
 export function mobileTextareaEnterData(line: string): string {
-  return line ? line + "\r" : "\r";
+  const trimmed = line.replace(/\r?\n+$/u, "").replace(/\r+$/u, "");
+  return trimmed ? trimmed + "\r" : "\r";
 }
 
 export interface MobileTextareaInput {
@@ -514,15 +586,167 @@ export function createMobileTextareaInput(
   el.style.resize = "none";
   el.style.overflow = "hidden";
 
-  const handleKeydown = (ev: KeyboardEvent) => {
-    // Enter sends the accumulated line. Shift/Ctrl/Alt+Enter keep the browser
-    // default (newline) so the user can still type multi-line prompts.
-    if (ev.key === "Enter" && !ev.shiftKey && !ev.ctrlKey && !ev.altKey) {
-      ev.preventDefault();
-      const line = el.value;
-      el.value = "";
-      onEnter(line);
+  // ── Slash-command autocomplete (Open-WebUI-style "/" predictive text) ─────
+  // Typing "/" pops a dropdown of matching slash commands above the input;
+  // Tab/Enter inserts the highlighted command into the buffer, arrows move
+  // the highlight, Esc closes. The dropdown is a fixed-position panel styled
+  // to match the terminal, appended to <body> (removed on dispose).
+  let matches: ReadonlyArray<{ cmd: string; hint: string }> = [];
+  let activeIndex = 0;
+  let dropdown: HTMLDivElement | null = null;
+
+  const buildDropdown = () => {
+    const box = document.createElement("div");
+    box.style.position = "fixed";
+    box.style.zIndex = "9999";
+    box.style.minWidth = "16rem";
+    box.style.maxHeight = "40vh";
+    box.style.overflowY = "auto";
+    box.style.boxSizing = "border-box";
+    box.style.padding = "0.25rem 0.5rem";
+    box.style.border = "1px solid rgba(148,163,184,0.5)";
+    box.style.borderRadius = "0.5rem";
+    box.style.background = "#0e1715";
+    box.style.color = "#e2e8f0";
+    box.style.font = "inherit";
+    box.style.fontSize = "13px";
+    box.style.boxShadow = "0 8px 32px rgba(0,0,0,0.5)";
+    return box;
+  };
+
+  const positionDropdown = () => {
+    if (!dropdown) return;
+    const r = el.getBoundingClientRect();
+    dropdown.style.left = `${Math.max(8, r.left)}px`;
+    dropdown.style.width = `${Math.min(r.width, 20 * 16)}px`;
+    dropdown.style.bottom = `${window.innerHeight - r.top + 8}px`;
+    if (dropdown.style.bottom === "") {
+      dropdown.style.bottom = `${r.top + r.height + 8}px`;
+    }
+  };
+
+  const renderDropdown = () => {
+    if (!matches.length) {
+      if (dropdown) {
+        dropdown.remove();
+        dropdown = null;
+      }
       return;
+    }
+    if (!dropdown) dropdown = buildDropdown();
+    const dd = dropdown; // capture: TS control-flow narrowing doesn't flow into the forEach callback
+    dd.innerHTML = "";
+    matches.forEach((m, i) => {
+      const row = document.createElement("div");
+      row.style.padding = "0.15rem 0.4rem";
+      row.style.borderRadius = "0.25rem";
+      row.style.whiteSpace = "nowrap";
+      row.style.overflow = "hidden";
+      row.style.textOverflow = "ellipsis";
+      if (i === activeIndex) {
+        row.style.background = "rgba(148,163,184,0.25)";
+        row.style.color = "#e2e8f0";
+      }
+      const name = document.createElement("span");
+      name.style.fontWeight = "600";
+      name.textContent = m.cmd;
+      const hint = document.createElement("span");
+      hint.style.marginLeft = "0.5rem";
+      hint.style.opacity = "0.7";
+      hint.textContent = m.hint;
+      row.append(name, hint);
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault(); // keep textarea focus
+        commitAutocomplete(m.cmd);
+      });
+      dd.appendChild(row);
+    });
+    positionDropdown();
+    if (!document.body.contains(dd)) document.body.appendChild(dd);
+  };
+
+  const currentToken = (): string => mobileToken(el.value);
+
+  const updateMatches = () => {
+    matches = mobileSlashMatches(currentToken());
+    activeIndex = 0;
+    renderDropdown();
+  };
+
+  const commitAutocomplete = (cmd: string) => {
+    el.value = mobileCommitToken(el.value, cmd);
+    matches = [];
+    activeIndex = 0;
+    renderDropdown();
+    // keep the caret at the end
+    el.setSelectionRange(el.value.length, el.value.length);
+    el.focus();
+  };
+
+  // ── end autocomplete setup ────────────────────────────────────────────────
+
+  // Double-Enter fix: on Android some keyboards deliver the FIRST Enter as a
+  // newline via the `input` event (keydown swallowed), so the keydown handler
+  // never sees it and the user must press Enter twice. Track the last keydown
+  // so we can tell a real newline-Enter (input) from a Shift+Enter newline.
+  let lastEnterViaKeydown: "enter" | "shift-enter" | null = null;
+  // Timestamp of the last keydown-driven submit, so an `input`-event newline
+  // that echoes it within the same tick isn't double-sent as a blank Enter.
+  let lastKeydownSendAt = 0;
+
+  const handleKeydown = (ev: KeyboardEvent) => {
+    if (ev.key === "Enter") {
+      const isMod = ev.shiftKey || ev.ctrlKey || ev.altKey;
+      // Autocomplete open + plain Enter/Tab => commit the highlighted command
+      // into the buffer (do NOT send the line).
+      if (matches.length && !isMod) {
+        ev.preventDefault();
+        commitAutocomplete(matches[activeIndex].cmd);
+        return;
+      }
+      lastEnterViaKeydown = isMod ? "shift-enter" : "enter";
+      if (!isMod) {
+        ev.preventDefault();
+        const line = el.value;
+        el.value = "";
+        lastKeydownSendAt = Date.now();
+        // reset so the input-event echo of this keydown is not re-sent
+        lastEnterViaKeydown = null;
+        matches = [];
+        renderDropdown();
+        onEnter(line);
+      }
+      // shift/ctrl/alt+Enter: let the browser insert a newline (multi-line).
+      return;
+    }
+    // Non-Enter keys: clear the marker so a later input newline counts as a
+    // fresh Enter (e.g. the user's first Enter, delivered as input).
+    lastEnterViaKeydown = null;
+    // ── autocomplete navigation ─────────────────────────────────────────────
+    if (matches.length) {
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        activeIndex = (activeIndex + 1) % matches.length;
+        renderDropdown();
+        return;
+      }
+      if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        activeIndex = (activeIndex - 1 + matches.length) % matches.length;
+        renderDropdown();
+        return;
+      }
+      if (ev.key === "Tab") {
+        ev.preventDefault();
+        commitAutocomplete(matches[activeIndex].cmd);
+        return;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        matches = [];
+        renderDropdown();
+        return;
+      }
     }
     if (ev.key === "Tab") {
       ev.preventDefault();
@@ -538,7 +762,50 @@ export function createMobileTextareaInput(
     }
   };
 
+  const handleInput = () => {
+    // Android sometimes delivers Enter as a newline via `input` with NO
+    // keydown. If the value gained a trailing newline and it wasn't an
+    // intentional Shift+Enter, treat it as the Enter submit.
+    const v = el.value;
+    if (v.endsWith("\n")) {
+      if (lastEnterViaKeydown === "shift-enter") {
+        // Intentional Shift+Enter newline: keep it as part of the buffer.
+        lastEnterViaKeydown = null;
+        return;
+      }
+      // A newline arriving within the same tick as a keydown submit is that
+      // submit's echo (keydown cleared the value; browser re-inserted "\n").
+      if (Date.now() - lastKeydownSendAt < 150) return;
+      const line = v.slice(0, -1);
+      el.value = "";
+      lastEnterViaKeydown = null;
+      onEnter(line);
+      return;
+    }
+    // Refresh the slash-command suggestions as the buffer changes.
+    updateMatches();
+  };
+
   el.addEventListener("keydown", handleKeydown);
+  el.addEventListener("input", handleInput);
+
+  // Close the dropdown when the input loses focus, and reposition it when the
+  // visual viewport shifts (keyboard open/close changes the layout).
+  const closeOnBlur = () => {
+    matches = [];
+    if (dropdown) {
+      dropdown.remove();
+      dropdown = null;
+    }
+  };
+  const repositionOnViewport = () => {
+    if (matches.length) positionDropdown();
+  };
+  el.addEventListener("blur", closeOnBlur);
+  window.addEventListener("resize", repositionOnViewport);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", repositionOnViewport);
+  }
 
   return {
     element: el,
@@ -547,6 +814,13 @@ export function createMobileTextareaInput(
     },
     dispose() {
       el.removeEventListener("keydown", handleKeydown);
+      el.removeEventListener("input", handleInput);
+      el.removeEventListener("blur", closeOnBlur);
+      window.removeEventListener("resize", repositionOnViewport);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", repositionOnViewport);
+      }
+      closeOnBlur();
       el.remove();
     },
   };

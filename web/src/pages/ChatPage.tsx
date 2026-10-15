@@ -326,6 +326,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? DEFAULT_TERMINAL_BACKGROUND;
   const terminalFg = theme.terminalForeground ?? DEFAULT_TERMINAL_FOREGROUND;
+  // Touch/mobile client detection (component scope, stable for this render):
+  // on Android/Chrome we hide the floating "copy last response" overlay (it
+  // crowds the visible textarea input bar) and show the visible textarea.
+  const isTouchMobile =
+    typeof navigator !== "undefined" &&
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
   const terminalTheme = useMemo(
     () => buildTerminalTheme(terminalBg, terminalFg),
     [terminalBg, terminalFg],
@@ -1013,6 +1019,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // shrink the host, so the ResizeObserver refit path kicks in and the
     // PTY re-lays-out above the keyboard.
     let appliedKeyboardInset = 0;
+    // Reveal the terminal so its bottom sits at the visible-viewport bottom —
+    // scrolling past the Android nav bar makes Chrome drop it, so no white
+    // band is left below the terminal. Used on keyboard open AND hide (and
+    // after a mobile submit) so the band disappears dynamically instead of
+    // only when the user installs the PWA.
+    const revealMobileTerminal = () => {
+      const vv = window.visualViewport;
+      if (!vv) return;
+      try {
+        term.scrollToBottom();
+      } catch {
+        /* ignore */
+      }
+      const delta = keyboardRevealScrollDelta(host.getBoundingClientRect().bottom, {
+        height: vv.height,
+        offsetTop: vv.offsetTop,
+      });
+      if (delta) window.scrollBy(0, delta);
+    };
     const syncKeyboardInset = () => {
       const wrap = termWrap;
       if (!wrap) return;
@@ -1026,24 +1051,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         wrap.style.paddingBottom = inset > 0 ? `${inset}px` : "";
         scheduleHostSync();
       }
-      const revealComposer = () => {
-        if (inset <= 0 || !vv) return;
-        try {
-          term.scrollToBottom();
-        } catch {
-          /* ignore */
-        }
-        const delta = keyboardRevealScrollDelta(host.getBoundingClientRect().bottom, {
-          height: vv.height,
-          offsetTop: vv.offsetTop,
-        });
-        if (delta) window.scrollBy(0, delta);
-      };
+      // Keyboard open: push the composer above the keyboard (inset padding +
+      // scroll). Keyboard HIDE (inset -> 0): clear the padding and scroll the
+      // terminal to fill the newly-available viewport, so the Android nav-bar
+      // white band disappears. The mobile-reveal is gated on the visible
+      // mobile textarea being active — desktop inset is always 0 and must not
+      // fight the page layout.
       if (inset > 0) {
-        revealComposer();
+        revealMobileTerminal();
         requestAnimationFrame(() => {
-          revealComposer();
-          requestAnimationFrame(revealComposer);
+          revealMobileTerminal();
+          requestAnimationFrame(revealMobileTerminal);
+        });
+      } else if (mobileTextareaInput) {
+        revealMobileTerminal();
+        requestAnimationFrame(() => {
+          revealMobileTerminal();
+          requestAnimationFrame(revealMobileTerminal);
         });
       }
     };
@@ -1607,6 +1631,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     mobileTextareaInput = createMobileTextareaInput(isMobileLike, (line) => {
       // Enter: send the full line + a CR to the PTY.
       mobileRawOnInput(mobileTextareaEnterData(line));
+      // After a submit, re-sync the keyboard inset + reveal so the Android
+      // nav-bar white band is gone even if the keyboard is still open or just
+      // closed (syncKeyboardInset reveals on inset->0 for the mobile path).
+      keyboardInsetSyncRef.current?.();
+      window.clearTimeout(keyboardRevealTimer);
+      keyboardRevealTimer = window.setTimeout(() => keyboardInsetSyncRef.current?.(), 350);
     });
     if (mobileTextareaInput) {
       mobileTextareaInputDispose = mobileTextareaInput.dispose;
@@ -2097,11 +2127,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          <CopyLastButton
-            onClick={handleCopyLast}
-            copied={copyState === "copied"}
-            color={terminalFg}
-          />
+          {!isTouchMobile && (
+            <CopyLastButton
+              onClick={handleCopyLast}
+              copied={copyState === "copied"}
+              color={terminalFg}
+            />
+          )}
 
           {chatPanelCollapsed && (
             <Button

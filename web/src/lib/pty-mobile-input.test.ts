@@ -8,6 +8,9 @@ import {
   mapKeydownToPty,
   mapInputEventToPty,
   mobileTextareaEnterData,
+  mobileToken,
+  mobileSlashMatches,
+  mobileCommitToken,
 } from "./pty-mobile-input";
 
 describe("shouldTreatInputAsMobileReplacement", () => {
@@ -310,5 +313,50 @@ describe("mobileTextareaEnterData", () => {
 
   it("preserves spaces and unicode verbatim", () => {
     expect(mobileTextareaEnterData("  héllo wörld  ")).toBe("  héllo wörld  \r");
+  });
+
+  it("strips a trailing newline left by the Android IME so one CR = one Enter", () => {
+    // An IME Enter commit often leaves a residual `\n` in the textarea value;
+    // sending `line\n\r` would make the backend see two Enters (double submit).
+    expect(mobileTextareaEnterData("ls -la\n")).toBe("ls -la\r");
+    expect(mobileTextareaEnterData("ls -la\n\n")).toBe("ls -la\r");
+  });
+
+  it("strips a trailing CR too", () => {
+    expect(mobileTextareaEnterData("hello\r")).toBe("hello\r");
+    expect(mobileTextareaEnterData("\r")).toBe("\r");
+  });
+});
+
+describe("slash-command autocomplete helpers", () => {
+  it("extracts the current / token from the buffer", () => {
+    expect(mobileToken("")).toBe("");
+    expect(mobileToken("/mo")).toBe("/mo");
+    expect(mobileToken("tell /mo")).toBe("/mo");
+    expect(mobileToken("tell /mo ")).toBe("/mo");
+    expect(mobileToken("plain text")).toBe("");
+  });
+
+  it("matches commands by prefix", () => {
+    const m = mobileSlashMatches("/mo");
+    expect(m.length).toBeGreaterThan(0);
+    expect(m[0].cmd).toBe("/model");
+    expect(mobileSlashMatches("/help")[0].cmd).toBe("/help");
+  });
+
+  it("falls back to substring match when no prefix matches", () => {
+    const m = mobileSlashMatches("/mem");
+    expect(m.some((c) => c.cmd === "/memory")).toBe(true);
+  });
+
+  it("returns nothing for non-slash tokens", () => {
+    expect(mobileSlashMatches("")).toEqual([]);
+    expect(mobileSlashMatches("ls")).toEqual([]);
+  });
+
+  it("commits a command, replacing the token with cmd + space", () => {
+    expect(mobileCommitToken("/mo", "/model")).toBe("/model ");
+    expect(mobileCommitToken("tell /mo", "/model")).toBe("tell /model ");
+    expect(mobileCommitToken("tell /mo ", "/model")).toBe("tell /model ");
   });
 });
